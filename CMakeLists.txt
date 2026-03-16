@@ -1,92 +1,165 @@
-#set(CMAKE_FIND_DEBUG_MODE 1)
-
-# Set the minimum CMake version required
 cmake_minimum_required(VERSION 3.16)
-
-# Set the project name and version
 project(StageEditor VERSION 1.0)
 
-# Specify the C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-if (CMAKE_CONFIGURATION_TYPES)
+if(CMAKE_CONFIGURATION_TYPES)
     set(CTEST_CONFIGURATION_TYPE "Debug")
 endif()
 
+# Set default build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug)
+endif()
 
-find_package(OpenGL REQUIRED)
-find_package(glfw3 CONFIG REQUIRED)
+# Find Vulkan
+find_package(Vulkan REQUIRED)
 find_package(glm CONFIG REQUIRED)
-find_package(GLEW REQUIRED)
 
+# ====================
+# Fetch SDL3
+# ====================
+include(FetchContent)
 
-file(COPY src/vertex.glsl src/fragment.glsl DESTINATION ${CMAKE_BINARY_DIR})
+FetchContent_Declare(
+  SDL3
+  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+  GIT_TAG release-3.2.8
+)
+FetchContent_MakeAvailable(SDL3)
 
+# ====================
+# ImGui Sources
+# ====================
+set(IMGUI_SOURCES
+    external/imgui/imgui.cpp
+    external/imgui/imgui_demo.cpp
+    external/imgui/imgui_draw.cpp
+    external/imgui/imgui_tables.cpp
+    external/imgui/imgui_widgets.cpp
+    external/imgui/backends/imgui_impl_sdl3.cpp
+    external/imgui/backends/imgui_impl_vulkan.cpp
+)
 
-# Add include directories
-include_directories(${CMAKE_SOURCE_DIR}/include)
-
-# Collect source files EXCLUDING main.cpp
+# ====================
+# Source and Header Files (excluding main)
+# ====================
 file(GLOB_RECURSE LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/*.cpp
 )
-
-# Remove src/main.cpp from LIB_SOURCES
 list(REMOVE_ITEM LIB_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp")
 
+file(GLOB_RECURSE LIB_HEADERS
+    ${CMAKE_SOURCE_DIR}/include/*.h
+    ${CMAKE_SOURCE_DIR}/include/*.hpp
+)
 
+# ====================
+# Create Static Library
+# ====================
+add_library(StageEditorLib STATIC ${LIB_SOURCES} ${LIB_HEADERS} ${IMGUI_SOURCES})
 
+target_include_directories(StageEditorLib PRIVATE
+    external/imgui
+    external/imgui/backends
+    ${CMAKE_SOURCE_DIR}/include
+    ${SDL3_SOURCE_DIR}/include  # for FetchContent
+)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
+target_link_libraries(StageEditorLib
+    PUBLIC
+    Vulkan::Vulkan
+    SDL3::SDL3
+    glm::glm
+)
 
+# ====================
+# Visual Studio Filters
+# ====================
+# Group headers, sources, and ImGui files
+source_group("Header Files" FILES ${LIB_HEADERS})
+source_group("Source Files" FILES ${LIB_SOURCES})
+source_group("ImGui" FILES ${IMGUI_SOURCES})
 
+# Optional: preserve folder structure for headers
+foreach(_header ${LIB_HEADERS})
+    get_filename_component(_dir "${_header}" PATH)
+    file(RELATIVE_PATH _rel_dir "${CMAKE_SOURCE_DIR}" "${_dir}")
+    source_group("${_rel_dir}" FILES "${_header}")
+endforeach()
 
-# Create the library
-add_library(StageEditorLib ${LIB_SOURCES})
+foreach(_src ${LIB_SOURCES})
+    get_filename_component(_dir "${_src}" PATH)
+    file(RELATIVE_PATH _rel_dir "${CMAKE_SOURCE_DIR}" "${_dir}")
+    source_group("${_rel_dir}" FILES "${_src}")
+endforeach()
 
-# Add the main executable (the application)
+# ====================
+# Executable
+# ====================
 add_executable(StageEditorMain src/main.cpp)
-# target_link_libraries(StageEditorMain PRIVATE StageEditorLib)
 
 
+if (WIN32)
+    add_custom_command(TARGET StageEditorMain POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL3::SDL3>
+            $<TARGET_FILE_DIR:StageEditorMain>
+    )
+endif()
 
-target_link_libraries(StageEditorMain
-    PRIVATE
-        StageEditorLib
-        Qt6::Widgets
-        Qt6::OpenGL
-        Qt6::OpenGLWidgets
+target_include_directories(StageEditorMain PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    external/imgui
+    external/imgui/backends
+    ${SDL3_SOURCE_DIR}/include
 )
 
+target_link_libraries(StageEditorMain PRIVATE
+    StageEditorLib
+)
 
+# ====================
+# Shader Copying
+# ====================
+set(SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/src/shaders")
+set(SHADER_DST_DIR "${CMAKE_BINARY_DIR}/shaders")
 
-# Set build type
-set(CMAKE_BUILD_TYPE Debug)
+file(GLOB SHADER_FILES "${SHADER_SRC_DIR}/*.spv")
 
-# Add Google Test using FetchContent
-include(FetchContent)
+foreach(SHADER_FILE ${SHADER_FILES})
+    get_filename_component(SHADER_FILENAME ${SHADER_FILE} NAME)
+    add_custom_command(
+        TARGET StageEditorMain POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_DST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SHADER_FILE}"
+                "${SHADER_DST_DIR}/${SHADER_FILENAME}"
+        COMMENT "Copying ${SHADER_FILENAME} to build/shaders"
+    )
+endforeach()
+
+# ====================
+# GoogleTest
+# ====================
 FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        6910c9d  # 1.16.0
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG 6910c9d  # 1.16.0
 )
-
-set(BUILD_GMOCK OFF CACHE BOOL "" FORCE) # Disable GMock
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
-set(CTEST_CONFIGURATION_TYPE Debug)
+
 enable_testing()
 
-
 file(GLOB UNIT_TEST_SOURCES tests/*.cpp)
-
 add_executable(StageEditorTests ${UNIT_TEST_SOURCES})
-target_link_libraries(StageEditorTests gtest_main StageEditorLib)
 
+target_link_libraries(StageEditorTests PRIVATE
+    gtest_main
+    StageEditorLib
+)
 
 add_test(NAME unit_tests COMMAND StageEditorTests)
-
-
-
-
-
